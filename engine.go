@@ -11,8 +11,7 @@ import (
 )
 
 type Engine struct {
-	inPath1 string
-	inPath2 string
+	inPaths []string
 	outPath string
 	verbose bool
 }
@@ -76,15 +75,18 @@ func copyFile(src, dst string) (err error) {
 	return
 }
 
-func newEngine(in1, in2, out string) (Engine, error) {
-	res := Engine{}
-	var err error
-	if res.inPath1, err = filepath.Abs(in1); err != nil {
-		return res, err
+func newEngine(in []string, out string) (Engine, error) {
+	res := Engine{
+		inPaths: in,
+		outPath: out,
+		verbose: false,
 	}
+	var err error
 
-	if res.inPath2, err = filepath.Abs(in2); err != nil {
-		return res, err
+	for i, p := range in {
+		if res.inPaths[i], err = filepath.Abs(p); err != nil {
+			return res, err
+		}
 	}
 
 	if res.outPath, err = filepath.Abs(out); err != nil {
@@ -96,29 +98,32 @@ func newEngine(in1, in2, out string) (Engine, error) {
 
 func (e Engine) run() error {
 	if e.verbose {
-		fmt.Println("Input 1: ", e.inPath1)
-		fmt.Println("Input 2: ", e.inPath2)
+		for i, p := range e.inPaths {
+			fmt.Printf("Input %d: %s", i, p)
+		}
 		fmt.Println("Output:  ", e.outPath)
 	}
-	if e.inPath1 == e.inPath2 {
-		return fmt.Errorf("the same paths are set for the input bundles")
-	}
 
-	if e.inPath1 == e.outPath || e.inPath2 == e.outPath {
-		return fmt.Errorf("the name of the output bundle must not match the input")
-	}
+	for i, p1 := range e.inPaths {
 
-	if !dirExists(e.inPath1 + "/Contents/MacOS") {
-		return fmt.Errorf("input bundle %s not found", e.inPath1)
-	}
+		if p1 == e.outPath {
+			return fmt.Errorf("the name of the output bundle must not match the input")
+		}
 
-	if !dirExists(e.inPath2 + "/Contents/MacOS") {
-		return fmt.Errorf("input bundle %s not found", e.inPath2)
+		if !dirExists(p1 + "/Contents/MacOS") {
+			return fmt.Errorf("input bundle %s not found", p1)
+		}
+
+		for _, p2 := range e.inPaths[i+1:] {
+			if p1 == p2 {
+				return fmt.Errorf("the same paths are set for the input bundles")
+			}
+		}
 	}
 
 	os.RemoveAll(e.outPath)
 
-	err := filepath.Walk(e.inPath1,
+	err := filepath.Walk(e.inPaths[0],
 		func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
@@ -134,26 +139,30 @@ func (e Engine) run() error {
 }
 
 func (e Engine) processPath(path string, fileInfo os.FileInfo) error {
-	in1 := path
-	in2 := strings.Replace(path, e.inPath1, e.inPath2, 1)
-	out := strings.Replace(path, e.inPath1, e.outPath, 1)
+	files := make([]string, len(e.inPaths))
+	for i, in := range e.inPaths {
+		files[i] = strings.Replace(path, e.inPaths[0], in, 1)
+	}
+
+	out := strings.Replace(path, e.inPaths[0], e.outPath, 1)
 
 	if fileInfo.IsDir() {
-		return e.processDir(in1, in2, out, fileInfo)
+		return e.processDir(out, fileInfo)
 	}
 
 	if fileInfo.Mode().Type()&os.ModeSymlink != 0 {
-		return e.processSymlink(in1, in2, out, fileInfo)
+		return e.processSymlink(files, out)
 	}
 
 	if fileInfo.Mode().IsRegular() {
-		return e.processFile(in1, in2, out, fileInfo)
+		return e.processFile(files, out, fileInfo)
 	}
 
-	return fmt.Errorf("unsupported file type %s", in1)
+	// return fmt.Errorf("unsupported file type %s", in1)
+	return nil
 }
 
-func (e Engine) processDir(in1, in2, out string, fileInfo os.FileInfo) error {
+func (e Engine) processDir(out string, fileInfo os.FileInfo) error {
 	if e.verbose {
 		fmt.Println("  - create directory")
 		fmt.Println("     - out: ", out)
@@ -161,12 +170,12 @@ func (e Engine) processDir(in1, in2, out string, fileInfo os.FileInfo) error {
 	return os.MkdirAll(out, fileInfo.Mode())
 }
 
-func (e Engine) processSymlink(in1, in2, out string, fileInfo os.FileInfo) error {
-	dest, err := os.Readlink(in1)
+func (e Engine) processSymlink(files []string, out string) error {
+	dest, err := os.Readlink(files[0])
 	if err != nil {
 		return err
 	}
-	dest = strings.Replace(dest, e.inPath1, e.outPath, 1)
+	dest = strings.Replace(dest, e.inPaths[0], e.outPath, 1)
 
 	if e.verbose {
 		fmt.Println("  - create symlink")
@@ -177,8 +186,12 @@ func (e Engine) processSymlink(in1, in2, out string, fileInfo os.FileInfo) error
 	return os.Symlink(dest, out)
 }
 
-func (e Engine) processFile(in1, in2, out string, fileInfo os.FileInfo) error {
-	f, err := os.Open(in1)
+func (e Engine) processFile(files []string, out string, fileInfo os.FileInfo) error {
+	if len(files) == 1 {
+		return e.copyFile(files[0], out)
+	}
+
+	f, err := os.Open(files[0])
 	if err != nil {
 		return err
 	}
@@ -194,32 +207,36 @@ func (e Engine) processFile(in1, in2, out string, fileInfo os.FileInfo) error {
 	maco64_Magic2 := [4]byte{0xcf, 0xfa, 0xed, 0xfe} // NXSwapInt(MH_MAGIC_64)
 
 	if bytes.Equal(data[:4], maco64_Magic[:]) || bytes.Equal(data[:4], maco64_Magic2[:]) {
-		return e.processBinFile(in1, in2, out, fileInfo)
+		return e.processBinFile(files, out, fileInfo)
 	}
 
-	return e.copyFile(in1, in2, out, fileInfo)
+	return e.copyFile(files[0], out)
 }
 
-func (e Engine) processBinFile(in1, in2, out string, fileInfo os.FileInfo) error {
+func (e Engine) processBinFile(files []string, out string, fileInfo os.FileInfo) error {
 	if e.verbose {
 		fmt.Println("  - create universal binary")
 		fmt.Println("     - out:   ", out)
-		fmt.Println("     - src 1: ", in1)
-		fmt.Println("     - src 2: ", in2)
+		for i, f := range files {
+			fmt.Printf("     - src %d: %s\n", i, f)
+		}
 	}
 
-	cmd := exec.Command("lipo", "-create", "-output", out, in1, in2)
+	args := []string{"-create", "-output", out}
+	args = append(args, files...)
+
+	cmd := exec.Command("lipo", args...)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 	return cmd.Run()
 }
 
-func (e Engine) copyFile(in1, in2, out string, fileInfo os.FileInfo) error {
+func (e Engine) copyFile(in, out string) error {
 	if e.verbose {
 		fmt.Println("  - copy file")
 		fmt.Println("     - out: ", out)
-		fmt.Println("     - src: ", in1)
+		fmt.Println("     - src: ", in)
 	}
 
-	return copyFile(in1, out)
+	return copyFile(in, out)
 }

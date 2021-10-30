@@ -7,7 +7,7 @@ import (
 	"github.com/docopt/docopt-go"
 )
 
-const AppVersion = "0.1"
+const AppVersion = "0.2"
 const description = `
 The lipo-app tool creates one universal (multi-architecture) bundle from one or more input bindles.
 All of the architectures in each input bundle will be copied into the output bundle.
@@ -20,6 +20,7 @@ modified in place.
 const usage = `
 Usage:
   lipo-app [options] <input_bundle> <input_bundle> <output_bundle>
+  lipo-app [options] <input_bundle> <output_bundle>
   lipo-app -h | --help
   lipo-app --version
 
@@ -53,7 +54,7 @@ func main() {
 		os.Exit(RetArgsParseError)
 	}
 
-	engine, err := newEngine(args.Input_bundle[0], args.Input_bundle[1], args.Output_bundle)
+	engine, err := newEngine(args.Input_bundle, args.Output_bundle)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(RetArgsParseError)
