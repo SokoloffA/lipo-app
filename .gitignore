@@ -16,3 +16,5 @@
 
 buld
 lipo-app
+lipo-app_amd64
+lipo-app_arm64
